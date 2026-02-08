@@ -1,0 +1,132 @@
+const threads = require("../data/threads");
+const moment = require("moment");
+const utils = require("../utils");
+const { getLogUrl, getLogFile, getLogCustomResponse, saveLogToStorage } = require("../data/logs");
+const { THREAD_STATUS } = require("../data/constants");
+const {getOrFetchChannel} = require("../utils");
+
+const LOG_LINES_PER_PAGE = 10;
+
+module.exports = ({ bot, knex, config, commands, hooks }) => {
+  const addOptQueryStringToUrl = (url, args) => {
+    const params = [];
+    if (args.verbose) params.push("verbose=1");
+    if (args.simple) params.push("simple=1");
+
+    if (params.length === 0) {
+      return url;
+    }
+
+    const hasQueryString = url.indexOf("?") > -1;
+    return url + (hasQueryString ? "&" : "?") + params.join("&");
+  };
+
+  const logsCmd = async (msg, args, thread) => {
+    let userId = args.userId || (thread && thread.user_id);
+    if (! userId) return;
+
+    const channel = await getOrFetchChannel(bot, msg.channel.id);
+    let userThreads = await threads.getClosedThreadsByUserId(userId);
+
+    // Tri décroissant par date
+    userThreads.sort((a, b) => {
+      if (a.created_at > b.created_at) return -1;
+      if (a.created_at < b.created_at) return 1;
+      return 0;
+    });
+
+    // Pagination
+    const totalUserThreads = userThreads.length;
+    const maxPage = Math.ceil(totalUserThreads / LOG_LINES_PER_PAGE);
+    const inputPage = args.page;
+    const page = Math.max(Math.min(inputPage ? parseInt(inputPage, 10) : 1, maxPage), 1); // Limite la page entre 1 et <page max>
+    const isPaginated = totalUserThreads > LOG_LINES_PER_PAGE;
+    const start = (page - 1) * LOG_LINES_PER_PAGE;
+    const end = page * LOG_LINES_PER_PAGE;
+    userThreads = userThreads.slice((page - 1) * LOG_LINES_PER_PAGE, page * LOG_LINES_PER_PAGE);
+
+    const threadLines = await Promise.all(userThreads.map(async userThread => {
+      const logUrl = await getLogUrl(userThread);
+      const formattedLogUrl = logUrl
+        ? `<${addOptQueryStringToUrl(logUrl, args)}>`
+        : `Voir le journal avec \`${config.prefix}log ${userThread.thread_number}\``;
+      const formattedDate = moment.utc(userThread.created_at).format("MMM Do [à] HH:mm [UTC]");
+      return `\`#${userThread.thread_number}\` \`${formattedDate}\` : ${formattedLogUrl}`;
+    }));
+
+    let message = isPaginated
+      ? `**Fichiers journaux pour <@${userId}>** (page **${page}/${maxPage}**, affichant les journaux **${start + 1}-${end}/${totalUserThreads}**) :`
+      : `**Fichiers journaux pour <@${userId}> :**`;
+
+    message += `\n${threadLines.join("\n")}`;
+
+    if (isPaginated) {
+      message += "\nPour en voir davantage, ajoutez un numéro de page à la fin de la commande";
+    }
+
+    if (threadLines.length === 0) message = `**Il n'y a aucun fichier journal pour <@${userId}>**`;
+
+    // Envoie la liste des journaux par blocs de 15 lignes par message
+    const lines = message.split("\n");
+    const chunks = utils.chunk(lines, 15);
+
+    let root = Promise.resolve();
+    chunks.forEach(chunkLines => {
+      root = root.then(() => channel.createMessage(chunkLines.join("\n")));
+    });
+  };
+
+  const logCmd = async (msg, args, _thread) => {
+    const threadId = args.threadId || (_thread && _thread.id);
+    if (! threadId) return;
+
+    const thread = (await threads.findById(threadId)) || (await threads.findByThreadNumber(threadId));
+    if (! thread) return;
+
+    const channel = await getOrFetchChannel(bot, msg.channel.id);
+
+    const customResponse = await getLogCustomResponse(thread);
+    if (customResponse && (customResponse.content || customResponse.file)) {
+      channel.createMessage(customResponse.content, customResponse.file);
+    }
+
+    const logUrl = await getLogUrl(thread);
+    if (logUrl) {
+      channel.createMessage(`Ouvrez le lien suivant pour consulter le journal du fil n°${thread.thread_number} :\n<${addOptQueryStringToUrl(logUrl, args)}>`);
+      return;
+    }
+
+    const logFile = await getLogFile(thread);
+    if (logFile) {
+      channel.createMessage(`Téléchargez le fichier suivant pour consulter le journal du fil n°${thread.thread_number} :`, logFile);
+      return;
+    }
+
+    if (thread.status === THREAD_STATUS.OPEN) {
+      channel.createMessage(`Les journaux de ce fil ne sont pas disponibles pour le moment, mais il est ouvert dans <#${thread.channel_id}>`);
+      return;
+    }
+
+    channel.createMessage("Les journaux de ce fil ne sont pas disponibles pour le moment");
+  };
+
+  const logCmdOptions = [
+    { name: "verbose", shortcut: "v", isSwitch: true },
+    { name: "simple", shortcut: "s", isSwitch: true },
+  ];
+
+  commands.addInboxServerCommand("logs", "<userId:userId> [page:number]", logsCmd, { options: logCmdOptions });
+  commands.addInboxServerCommand("logs", "[page:number]", logsCmd, { options: logCmdOptions });
+
+  // Ajoute ces deux substitutions pour autoriser la commande dans les fils suspendus
+  commands.addInboxThreadCommand("log", "", logCmd, { options: logCmdOptions, aliases: ["thread"], allowSuspended: true });
+  commands.addInboxThreadCommand("loglink", "", logCmd, { options: logCmdOptions, allowSuspended: true });
+
+  commands.addInboxServerCommand("log", "<threadId:string>", logCmd, { options: logCmdOptions, aliases: ["thread"] });
+  commands.addInboxServerCommand("loglink", "<threadId:string>", logCmd, { options: logCmdOptions });
+
+  hooks.afterThreadClose(async ({ threadId }) => {
+    const thread = await threads.findById(threadId);
+    await saveLogToStorage(thread);
+  });
+};
