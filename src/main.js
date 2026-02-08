@@ -429,8 +429,29 @@ function initBaseMessageHandlers() {
 
         const threadMessageWithEdit = threadMessage.clone();
         threadMessageWithEdit.body = newContent;
-        const formatted = await formatters.formatUserReplyThreadMessage(threadMessageWithEdit);
-        await bot.editMessage(thread.channel_id, threadMessage.inbox_message_id, formatted).catch(console.warn);
+
+        if (config.ticketEmbed !== false) {
+          // === MODE EMBED ===
+          const userAvatarURL = (msg.author && typeof msg.author.dynamicAvatarURL === "function")
+            ? msg.author.dynamicAvatarURL("png", 256)
+            : (msg.author && msg.author.avatarURL || null);
+
+          const editEmbed = {
+            author: {
+              name: threadMessageWithEdit.user_name,
+              icon_url: userAvatarURL,
+            },
+            description: newContent,
+            color: 0x2ECC71,
+            timestamp: new Date().toISOString(),
+          };
+
+          await bot.editMessage(thread.channel_id, threadMessage.inbox_message_id, { embeds: [editEmbed] }).catch(console.warn);
+        } else {
+          // === MODE MESSAGE CLASSIQUE ===
+          const formatted = await formatters.formatUserReplyThreadMessage(threadMessageWithEdit);
+          await bot.editMessage(thread.channel_id, threadMessage.inbox_message_id, formatted).catch(console.warn);
+        }
       } else {
         await thread.postSystemMessage(editMessage);
       }

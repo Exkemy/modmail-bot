@@ -355,7 +355,38 @@ class Thread {
       inboxThreadMessage.body = `${frFlag} ${text}`;
     }
 
-    const inboxContent = messageContentToAdvancedMessageContent(await formatters.formatStaffReplyThreadMessage(inboxThreadMessage));
+    let inboxContent;
+
+    if (config.ticketEmbed !== false) {
+      // === MODE EMBED ===
+      const embedRoleName = config.overrideRoleNameDisplay || inboxThreadMessage.role_name || config.fallbackRoleName;
+      const modDisplayName = inboxThreadMessage.is_anonymous
+        ? (embedRoleName ? `(Anonyme) ${embedRoleName}` : "(Anonyme)")
+        : (embedRoleName ? `(${embedRoleName}) ${inboxThreadMessage.user_name}` : inboxThreadMessage.user_name);
+
+      const staffEmbed = {
+        author: { name: modDisplayName },
+        description: inboxThreadMessage.body || undefined,
+        color: 0x5865F2,
+        timestamp: new Date().toISOString(),
+      };
+
+      // Add attachment links to embed description
+      if (attachmentLinks.length > 0) {
+        staffEmbed.description = (staffEmbed.description || "") + "\n\n" + attachmentLinks.map(link => `📎 ${link}`).join("\n");
+      }
+
+      if (config.threadTimestamps) {
+        const formattedTimestamp = utils.getTimestamp(threadMessage.created_at);
+        staffEmbed.footer = { text: formattedTimestamp };
+      }
+
+      inboxContent = { embeds: [staffEmbed] };
+    } else {
+      // === MODE MESSAGE CLASSIQUE ===
+      inboxContent = messageContentToAdvancedMessageContent(await formatters.formatStaffReplyThreadMessage(inboxThreadMessage));
+    }
+
     if (messageReference) {
       inboxContent.messageReference = {
         channelID: messageReference.channelID,
@@ -580,44 +611,52 @@ class Thread {
       inboxDisplayMessage.body = `${getLanguageFlag(userLanguage)} ${messageContent}`;
     }
 
-    // Build an embed with user avatar and inline images
-    const userAvatarURL = (typeof msg.author.dynamicAvatarURL === "function")
-      ? msg.author.dynamicAvatarURL("png", 256)
-      : (msg.author.avatarURL || null);
+    let inboxContent;
 
-    const embed = {
-      author: {
-        name: inboxDisplayMessage.user_name,
-        icon_url: userAvatarURL,
-      },
-      description: inboxDisplayMessage.body || undefined,
-      color: 0x2ECC71,
-      timestamp: new Date().toISOString(),
-    };
+    if (config.ticketEmbed !== false) {
+      // === MODE EMBED ===
+      const userAvatarURL = (typeof msg.author.dynamicAvatarURL === "function")
+        ? msg.author.dynamicAvatarURL("png", 256)
+        : (msg.author.avatarURL || null);
 
-    // Display the first image directly in the embed
-    if (imageAttachmentLinks.length > 0) {
-      embed.image = { url: imageAttachmentLinks[0] };
+      const embed = {
+        author: {
+          name: inboxDisplayMessage.user_name,
+          icon_url: userAvatarURL,
+        },
+        description: inboxDisplayMessage.body || undefined,
+        color: 0x2ECC71,
+        timestamp: new Date().toISOString(),
+      };
+
+      // Display the first image directly in the embed
+      if (imageAttachmentLinks.length > 0) {
+        embed.image = { url: imageAttachmentLinks[0] };
+      }
+
+      // Add non-image attachment links to description
+      const nonImageLinks = attachmentLinks.filter(link => ! imageAttachmentLinks.includes(link));
+      if (nonImageLinks.length > 0) {
+        embed.description = (embed.description || "") + "\n\n" + nonImageLinks.map(link => `📎 ${link}`).join("\n");
+      }
+
+      // Add extra image links (2nd, 3rd, etc.) as text links in description
+      if (imageAttachmentLinks.length > 1) {
+        const extraImages = imageAttachmentLinks.slice(1).map(link => `🖼️ ${link}`).join("\n");
+        embed.description = (embed.description || "") + "\n\n" + extraImages;
+      }
+
+      if (config.threadTimestamps) {
+        const formattedTimestamp = utils.getTimestamp(threadMessage.created_at);
+        embed.footer = { text: formattedTimestamp };
+      }
+
+      inboxContent = { embeds: [embed] };
+    } else {
+      // === MODE MESSAGE CLASSIQUE ===
+      inboxContent = messageContentToAdvancedMessageContent(await formatters.formatUserReplyThreadMessage(inboxDisplayMessage));
     }
 
-    // Add non-image attachment links to description
-    const nonImageLinks = attachmentLinks.filter(link => ! imageAttachmentLinks.includes(link));
-    if (nonImageLinks.length > 0) {
-      embed.description = (embed.description || "") + "\n\n" + nonImageLinks.map(link => `📎 ${link}`).join("\n");
-    }
-
-    // Add extra image links (2nd, 3rd, etc.) as text links in description
-    if (imageAttachmentLinks.length > 1) {
-      const extraImages = imageAttachmentLinks.slice(1).map(link => `🖼️ ${link}`).join("\n");
-      embed.description = (embed.description || "") + "\n\n" + extraImages;
-    }
-
-    if (config.threadTimestamps) {
-      const formattedTimestamp = utils.getTimestamp(threadMessage.created_at);
-      embed.footer = { text: formattedTimestamp };
-    }
-
-    const inboxContent = { embeds: [embed] };
     if (messageReference) {
       inboxContent.messageReference = {
         channelID: messageReference.channelID,
@@ -690,7 +729,21 @@ class Thread {
       is_anonymous: 0,
     });
 
-    const content = messageContentToAdvancedMessageContent(await formatters.formatSystemThreadMessage(threadMessage));
+    let content;
+
+    if (config.ticketEmbed !== false) {
+      // === MODE EMBED ===
+      const systemEmbed = {
+        description: text,
+        color: 0x95A5A6,
+        timestamp: new Date().toISOString(),
+      };
+      content = { embeds: [systemEmbed] };
+    } else {
+      // === MODE MESSAGE CLASSIQUE ===
+      content = messageContentToAdvancedMessageContent(await formatters.formatSystemThreadMessage(threadMessage));
+    }
+
     content.allowedMentions = opts.allowedMentions;
     if (opts.messageReference) {
       content.messageReference = {
@@ -771,10 +824,25 @@ class Thread {
               })
             : threadMessage);
 
-      const inboxContent = await formatters.formatSystemToUserThreadMessage(inboxThreadMessage);
-      const finalInboxContent = typeof inboxContent === "string" ? {content: inboxContent} : inboxContent;
+      let finalInboxContent;
+
+      if (config.ticketEmbed !== false) {
+        // === MODE EMBED ===
+        const sysEmbed = {
+          author: { name: `⚙️ ${bot.user.username}` },
+          description: inboxThreadMessage.body || undefined,
+          color: 0xF39C12,
+          timestamp: new Date().toISOString(),
+        };
+        finalInboxContent = { embeds: [sysEmbed] };
+      } else {
+        // === MODE MESSAGE CLASSIQUE ===
+        const inboxContent = await formatters.formatSystemToUserThreadMessage(inboxThreadMessage);
+        finalInboxContent = typeof inboxContent === "string" ? {content: inboxContent} : inboxContent;
+      }
+
       finalInboxContent.allowedMentions = opts.allowedMentions;
-      const inboxMsg = await this._postToThreadChannel(inboxContent);
+      const inboxMsg = await this._postToThreadChannel(finalInboxContent);
       threadMessage.inbox_message_id = inboxMsg.id;
     }
 
@@ -1122,18 +1190,42 @@ class Thread {
       body: newText,
     });
 
-    const formattedThreadMessage = await formatters.formatStaffReplyThreadMessage(newThreadMessage);
     const formattedDM = await formatters.formatStaffReplyDM(newThreadMessage);
 
     // Same restriction as in replies. Because edits could theoretically change the number of messages a reply takes, we enforce replies
     // to fit within 1 message to avoid the headache and issues caused by that.
-    if (! utils.messageContentIsWithinMaxLength(formattedDM) || ! utils.messageContentIsWithinMaxLength(formattedThreadMessage)) {
+    if (! utils.messageContentIsWithinMaxLength(formattedDM)) {
       await this.postSystemMessage("La réponse modifiée est trop longue ! Assurez-vous que la modification fasse moins de 2000 caractères au total, nom du modérateur compris.");
       return false;
     }
 
     await bot.editMessage(threadMessage.dm_channel_id, threadMessage.dm_message_id, formattedDM);
-    await bot.editMessage(this.channel_id, threadMessage.inbox_message_id, formattedThreadMessage);
+
+    if (config.ticketEmbed !== false) {
+      // === MODE EMBED ===
+      const embedRoleName = config.overrideRoleNameDisplay || newThreadMessage.role_name || config.fallbackRoleName;
+      const modDisplayName = newThreadMessage.is_anonymous
+        ? (embedRoleName ? `(Anonyme) ${embedRoleName}` : "(Anonyme)")
+        : (embedRoleName ? `(${embedRoleName}) ${newThreadMessage.user_name}` : newThreadMessage.user_name);
+
+      const staffEmbed = {
+        author: { name: modDisplayName },
+        description: newText,
+        color: 0x5865F2,
+        timestamp: new Date().toISOString(),
+      };
+
+      if (config.threadTimestamps) {
+        const formattedTimestamp = utils.getTimestamp(newThreadMessage.created_at);
+        staffEmbed.footer = { text: formattedTimestamp };
+      }
+
+      await bot.editMessage(this.channel_id, threadMessage.inbox_message_id, { embeds: [staffEmbed] });
+    } else {
+      // === MODE MESSAGE CLASSIQUE ===
+      const formattedThreadMessage = await formatters.formatStaffReplyThreadMessage(newThreadMessage);
+      await bot.editMessage(this.channel_id, threadMessage.inbox_message_id, formattedThreadMessage);
+    }
 
     if (! opts.quiet) {
       const editThreadMessage = new ThreadMessage({
